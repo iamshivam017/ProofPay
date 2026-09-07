@@ -90,13 +90,22 @@ export class X402PaymentFailure extends Error {
 }
 
 export class TelegraphRequestFailure extends Error {
-  readonly code = "TELEGRAPH_REQUEST_FAILURE" as const;
+  readonly code:
+    | "TELEGRAPH_REQUEST_FAILURE"
+    | "MINER_UNREACHABLE"
+    | "MINER_TIMEOUT"
+    | "INVALID_MINER_RESPONSE";
   readonly status?: number;
 
-  constructor(message: string, status?: number) {
+  constructor(
+    message: string,
+    status?: number,
+    code: TelegraphRequestFailure["code"] = "TELEGRAPH_REQUEST_FAILURE",
+  ) {
     super(message);
     this.name = "TelegraphRequestFailure";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -323,9 +332,11 @@ export async function postWithX402<T = unknown>(
       throw new X402PaymentFailure("x402 challenge was not successfully paid");
     }
     if (!response.ok) {
+      const unavailable = [429, 500, 502, 503].includes(response.status);
       throw new TelegraphRequestFailure(
         `Telegraph returned HTTP ${response.status}`,
         response.status,
+        unavailable ? "MINER_UNREACHABLE" : "TELEGRAPH_REQUEST_FAILURE",
       );
     }
     if (!selectedRequirement) {
@@ -340,6 +351,7 @@ export async function postWithX402<T = unknown>(
       throw new TelegraphRequestFailure(
         `Telegraph returned invalid JSON: ${safeErrorMessage(cause)}`,
         response.status,
+        "INVALID_MINER_RESPONSE",
       );
     }
 
@@ -355,11 +367,19 @@ export async function postWithX402<T = unknown>(
     if (cause instanceof X402PaymentFailure || cause instanceof TelegraphRequestFailure) {
       throw cause;
     }
-    const timedOut = controller.signal.aborted;
-    throw new X402PaymentFailure(
-      timedOut ? "x402 exchange timed out" : `x402 exchange failed: ${safeErrorMessage(cause)}`,
-      { cause },
-    );
+    if (controller.signal.aborted) {
+      throw new TelegraphRequestFailure("Telegraph request timed out", undefined, "MINER_TIMEOUT");
+    }
+    if (!selectedRequirement && !sawPaymentSignature) {
+      throw new TelegraphRequestFailure(
+        `Telegraph Miner is unreachable: ${safeErrorMessage(cause)}`,
+        undefined,
+        "MINER_UNREACHABLE",
+      );
+    }
+    throw new X402PaymentFailure(`x402 exchange failed: ${safeErrorMessage(cause)}`, {
+      cause,
+    });
   } finally {
     clearTimeout(timeout);
   }

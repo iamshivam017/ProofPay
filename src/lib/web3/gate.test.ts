@@ -62,7 +62,7 @@ test("ALLOW is the only verdict that dispatches to the executor", async () => {
   );
 
   assert.equal(calls, 1);
-  assert.deepEqual(result, { status: "ERROR", reason: "network_failure" });
+  assert.deepEqual(result, { status: "ERROR", reason: "RPC_FAILURE" });
 });
 
 test("executor is pinned to Base Sepolia", () => {
@@ -78,7 +78,13 @@ test("invalid payment input fails before wallet configuration or broadcast", asy
 });
 
 test("executor failures retain the required auditable error reasons", async () => {
-  for (const reason of ["tx_reverted", "network_failure", "insufficient_gas"] as const) {
+  for (const reason of [
+    "TX_REVERTED",
+    "RPC_FAILURE",
+    "INSUFFICIENT_GAS",
+    "MISSING_CONFIG",
+    "INVALID_INPUT",
+  ] as const) {
     const result = await executeIfAllowedUsing(
       decision("ALLOW"),
       "recipient",

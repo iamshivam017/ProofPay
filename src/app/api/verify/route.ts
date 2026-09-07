@@ -1,63 +1,30 @@
 import { NextResponse } from "next/server";
-import { parseEther, type Address, type Hex } from "viem";
-import { z } from "zod";
+import { parseEther } from "viem";
 
-import {
-  DEFAULT_BASE_SEPOLIA_USDC,
-  postWithX402,
-  TelegraphRequestFailure,
-  X402PaymentFailure,
-} from "@/lib/telegraph/x402-client";
-import { evaluatePolicy } from "@/src/lib/policy/engine";
-import type { MinerSignal, MinerSignalStatus } from "@/src/lib/policy/types";
-import type { DecisionTicket } from "@/src/lib/ticket/types";
+import { postWithX402, TelegraphRequestFailure, X402PaymentFailure } from "@/lib/telegraph/x402-client";
+import { parseVerificationRequest, RequestValidationError, SUPPORTED_INTENT } from "@/src/lib/api/request-schema";
+import { ConfigValidationError, getServerConfig } from "@/src/lib/config";
+import { MATERIAL_CONFLICT_DELTA, evaluatePolicy } from "@/src/lib/policy/engine";
+import type { MinerSignal } from "@/src/lib/policy/types";
+import { recordTelemetry } from "@/src/lib/telemetry";
+import { extractMinerIdentity, normalizeRealMinerSignals } from "@/src/lib/telegraph/normalize";
+import type { DecisionTicket, PublicError, VerifyFailureResponse } from "@/src/lib/ticket/types";
 import { executeIfAllowed } from "@/src/lib/web3/gate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MAX_REQUEST_AMOUNT_WEI = parseEther("0.001");
-
-const amountSchema = z.string().trim().refine((value) => {
-  try {
-    const amount = parseEther(value);
-    return amount > 0n && amount <= MAX_REQUEST_AMOUNT_WEI;
-  } catch {
-    return false;
-  }
-}, "Amount must be greater than 0 and no more than 0.001 ETH");
-
-const requestSchema = z.object({
-  amount: amountSchema,
-  recipient: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "Invalid recipient wallet"),
-  reason: z.string().trim().min(3).max(280),
-  evidence: z.string().trim().min(3).max(20_000),
-  intent: z.string().trim().min(1).max(100).default("AUTHENTICITY_GATE"),
-});
-
-const envSchema = z.object({
-  TELEGRAPH_ENGINE_URL: z.string().url(),
-  EXECUTOR_PRIVATE_KEY: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
-  BASE_SEPOLIA_RPC_URL: z.string().url(),
-  BASE_SEPOLIA_USDC_ADDRESS: z
-    .string()
-    .regex(/^0x[0-9a-fA-F]{40}$/)
-    .default(DEFAULT_BASE_SEPOLIA_USDC),
-  X402_MAX_PAYMENT_ATOMIC: z.coerce.bigint().positive(),
-  TELEGRAPH_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
-});
-
 export async function POST(request: Request) {
   const requestId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
   const startedAt = Date.now();
+  recordTelemetry("VERIFICATION_ATTEMPT");
 
   try {
-    const input = requestSchema.parse(await request.json());
-    const env = envSchema.parse(process.env);
-
+    const input = parseVerificationRequest(await readJson(request));
+    const config = getServerConfig();
     const result = await postWithX402({
-      targetUrl: env.TELEGRAPH_ENGINE_URL,
+      targetUrl: config.telegraphEngineUrl,
       payload: {
         evidence: input.evidence,
         intent: input.intent,
@@ -67,25 +34,45 @@ export async function POST(request: Request) {
           reason: input.reason,
         },
       },
-      privateKey: env.EXECUTOR_PRIVATE_KEY as Hex,
-      rpcUrl: env.BASE_SEPOLIA_RPC_URL,
-      expectedUsdcAddress: env.BASE_SEPOLIA_USDC_ADDRESS as Address,
-      maxPaymentAtomic: env.X402_MAX_PAYMENT_ATOMIC,
-      timeoutMs: env.TELEGRAPH_REQUEST_TIMEOUT_MS,
+      privateKey: config.executorPrivateKey,
+      rpcUrl: config.baseSepoliaRpcUrl,
+      expectedUsdcAddress: config.baseSepoliaUsdcAddress,
+      maxPaymentAtomic: config.x402MaxPaymentAtomic,
+      timeoutMs: config.telegraphRequestTimeoutMs,
       requestHeaders: { "x-proofpay-request-id": requestId },
     });
 
-    const policy = evaluatePolicy(normalizeRealMinerSignals(result.data));
-    const execution = await executeIfAllowed(
-      policy,
-      input.recipient,
-      parseEther(input.amount),
-    );
+    const normalized = normalizeRealMinerSignals(result.data);
+    const policy = evaluatePolicy(normalized.signals);
+    const execution = await executeIfAllowed(policy, input.recipient, parseEther(input.amount));
     const latencyMs = Date.now() - startedAt;
+    const minerIdentity = extractMinerIdentity(result.data);
+    const x402Spend = BigInt(result.payment.requirement.amount);
+    const errors: PublicError[] = normalized.error ? [normalized.error] : [];
 
+    if (execution.status === "ERROR") {
+      errors.push({ code: execution.reason, message: paymentErrorMessage(execution.reason) });
+      recordTelemetry("PAYMENT_FAILURE");
+    } else if (execution.status === "EXECUTED") {
+      recordTelemetry("PAYMENT_SUCCESS");
+    }
+    recordTelemetry(policy.verdict, { latencyMs, x402SpendAtomic: x402Spend });
+
+    const txHash = execution.status === "EXECUTED" ? execution.txHash : null;
+    const status = execution.status === "EXECUTED"
+      ? "SUCCESS"
+      : execution.status === "ERROR"
+        ? "ERROR"
+        : "HELD";
+    const reason = errors[0]?.message ?? policy.reason;
     const ticket: DecisionTicket = {
       requestId,
       timestamp,
+      status,
+      decision: policy.verdict,
+      reason,
+      signals: policy.signals,
+      errors,
       request: {
         recipient: input.recipient,
         amountEth: input.amount,
@@ -93,10 +80,11 @@ export async function POST(request: Request) {
         evidenceSummary: summarizeEvidence(input.evidence),
       },
       verification: {
-        minerIdentity: extractMinerIdentity(result.data),
+        minerIdentity,
         intent: input.intent,
         latencyMs,
         signals: policy.signals,
+        conflict: signalConflict(policy.signals),
       },
       policy,
       x402: {
@@ -106,65 +94,72 @@ export async function POST(request: Request) {
         transactionHash: result.payment.transactionHash,
       },
       execution,
+      telegraph: {
+        miner: minerIdentity,
+        intent: input.intent,
+        latencyMs,
+        x402: {
+          status: "SETTLED",
+          network: result.payment.requirement.network,
+          asset: result.payment.requirement.asset,
+          amountAtomic: result.payment.requirement.amount,
+          transactionHash: result.payment.transactionHash,
+        },
+      },
+      payment: {
+        executed: txHash !== null,
+        txHash,
+        explorerUrl: txHash ? `https://sepolia.basescan.org/tx/${txHash}` : null,
+      },
     };
 
-    console.info("proofpay.decision-ticket.created", ticket);
+    console.info("proofpay.decision-ticket.created", redactTicketForLog(ticket));
     return NextResponse.json(ticket);
   } catch (error) {
+    const latencyMs = Date.now() - startedAt;
     const failure = normalizeError(error);
+    recordTelemetry("ERROR", { latencyMs });
+    if (failure.code === "MINER_TIMEOUT") recordTelemetry("MINER_TIMEOUT");
+    if (failure.code === "X402_PAYMENT_FAILURE") recordTelemetry("X402_FAILURE");
+
+    const response: VerifyFailureResponse = {
+      requestId,
+      timestamp,
+      status: failure.status,
+      decision: failure.decision,
+      reason: failure.message,
+      signals: [],
+      telegraph: { miner: null, intent: SUPPORTED_INTENT, latencyMs, x402: null },
+      payment: { executed: false, txHash: null, explorerUrl: null },
+      errors: [{ code: failure.code, message: failure.message }],
+      error: { code: failure.code, message: failure.message },
+    };
 
     console.error("proofpay.verification.failed", {
       requestId,
       timestamp,
-      latencyMs: Date.now() - startedAt,
+      latencyMs,
       code: failure.code,
       status: "FAIL_CLOSED",
-      message: failure.message,
     });
-
-    return NextResponse.json(
-      { requestId, timestamp, error: { code: failure.code, message: failure.message } },
-      { status: failure.httpStatus },
-    );
+    return NextResponse.json(response, { status: failure.httpStatus });
   }
 }
 
-function normalizeRealMinerSignals(data: unknown): MinerSignal[] {
-  const candidateSignals = Array.isArray(data)
-    ? data
-    : data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).signals)
-      ? ((data as Record<string, unknown>).signals as unknown[])
-      : null;
-
-  if (!candidateSignals || candidateSignals.length === 0) {
-    return [missingRealSignal(data)];
+async function readJson(request: Request): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch (cause) {
+    throw new RequestValidationError("INVALID_INPUT", "Payment request is incomplete or invalid.", { cause });
   }
-
-  // Values remain verbatim; the policy engine owns runtime validation.
-  return candidateSignals.map((value) => value as MinerSignal);
 }
 
-function missingRealSignal(data: unknown): MinerSignal {
-  return {
-    id: "telegraph-primary-signal",
-    minerId: extractMinerIdentity(data) ?? "unavailable",
-    kind: "normalized-authenticity-risk",
-    required: true,
-    status: "MISSING" satisfies MinerSignalStatus,
-    risk: null,
-    confidence: null,
-  };
-}
-
-function extractMinerIdentity(data: unknown): string | null {
-  if (!data || typeof data !== "object") return null;
-  const value = data as Record<string, unknown>;
-  for (const key of ["miner", "minerId", "miner_id", "subnet", "subnetId"]) {
-    if (typeof value[key] === "string" || typeof value[key] === "number") {
-      return String(value[key]);
-    }
-  }
-  return null;
+function signalConflict(signals: MinerSignal[]): boolean | null {
+  const risks = signals
+    .filter((signal) => signal.required && signal.status === "OK" && typeof signal.risk === "number")
+    .map((signal) => signal.risk as number);
+  if (risks.length < 2) return null;
+  return Math.max(...risks) - Math.min(...risks) >= MATERIAL_CONFLICT_DELTA;
 }
 
 function summarizeEvidence(evidence: string): string {
@@ -175,31 +170,80 @@ function normalizeError(error: unknown): {
   code: string;
   message: string;
   httpStatus: number;
+  status: "HELD" | "ERROR";
+  decision: "REVIEW" | "BLOCK";
 } {
+  if (error instanceof RequestValidationError) {
+    return {
+      code: error.code,
+      message: error.message,
+      httpStatus: 400,
+      status: "HELD",
+      decision: error.code === "INVALID_INPUT" ? "BLOCK" : "REVIEW",
+    };
+  }
+  if (error instanceof ConfigValidationError) {
+    return {
+      code: error.code,
+      message: "Server configuration incomplete — verification cannot run.",
+      httpStatus: 503,
+      status: "ERROR",
+      decision: "REVIEW",
+    };
+  }
   if (error instanceof X402PaymentFailure) {
     return {
       code: error.code,
-      message: "Verification unavailable — action held for safety.",
+      message: "Miner payment could not be completed — action held for safety.",
       httpStatus: 502,
+      status: "HELD",
+      decision: "REVIEW",
     };
   }
   if (error instanceof TelegraphRequestFailure) {
+    const message = error.code === "MINER_TIMEOUT"
+      ? "Miner timed out — action held for safety."
+      : error.code === "INVALID_MINER_RESPONSE"
+        ? "Miner response was invalid — action held for safety."
+        : "Verification unavailable — action held for safety.";
     return {
       code: error.code,
-      message: "Verification unavailable — action held for safety.",
-      httpStatus: 502,
-    };
-  }
-  if (error instanceof z.ZodError) {
-    return {
-      code: "INVALID_INPUT_OR_CONFIG",
-      message: "Payment request or server configuration is invalid.",
-      httpStatus: 400,
+      message,
+      httpStatus: error.status === 429 ? 503 : 502,
+      status: "HELD",
+      decision: "REVIEW",
     };
   }
   return {
     code: "MINER_UNREACHABLE",
-    message: "Verification unavailable — action held for safety.",
+    message: "Network error during verification — action held for safety.",
     httpStatus: 502,
+    status: "HELD",
+    decision: "REVIEW",
+  };
+}
+
+function paymentErrorMessage(reason: string): string {
+  if (reason === "MISSING_CONFIG") return "Server configuration incomplete — payment cannot run.";
+  if (reason === "INSUFFICIENT_GAS") return "Executor has insufficient Base Sepolia gas.";
+  if (reason === "TX_REVERTED") return "Base Sepolia transaction reverted — no success reported.";
+  if (reason === "INVALID_INPUT") return "Payment request is incomplete or invalid.";
+  return "Base Sepolia RPC failure — payment was not confirmed.";
+}
+
+function redactTicketForLog(ticket: DecisionTicket) {
+  return {
+    requestId: ticket.requestId,
+    timestamp: ticket.timestamp,
+    status: ticket.status,
+    decision: ticket.decision,
+    recipient: ticket.request.recipient,
+    amountEth: ticket.request.amountEth,
+    miner: ticket.telegraph.miner,
+    latencyMs: ticket.telegraph.latencyMs,
+    signalCount: ticket.signals.length,
+    x402TransactionHash: ticket.x402.transactionHash,
+    paymentTransactionHash: ticket.payment.txHash,
+    errors: ticket.errors,
   };
 }

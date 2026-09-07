@@ -13,10 +13,9 @@ interface VerificationChamberProps {
 }
 
 const truthfulStages = [
-  "Payment instruction sealed locally",
-  "Connecting to ProofPay verification endpoint",
-  "Telegraph x402 handshake in progress",
-  "Awaiting paid Miner response",
+  "Starting verification",
+  "Sending request to the ProofPay server",
+  "Awaiting Telegraph, x402, policy, and payment-gate result",
 ];
 
 export function VerificationChamber({
@@ -73,7 +72,7 @@ export function VerificationChamber({
               {truthfulStages.slice(0, visibleStages).map((stage, index) => (
                 <div key={stage} className="flex gap-3 text-[#c4cec7] animate-in">
                   <span className="select-none text-signal">&gt;</span>
-                  <span>{stage}{index === visibleStages - 1 ? "…" : " ✓"}</span>
+                  <span>{stage}{index === visibleStages - 1 ? "…" : ""}</span>
                 </div>
               ))}
             </div>

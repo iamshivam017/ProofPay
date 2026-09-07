@@ -1,21 +1,17 @@
 import "server-only";
 
-import { createPublicClient, createWalletClient, http, type Hex } from "viem";
+import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { z } from "zod";
+
+import { ConfigValidationError, getServerConfig } from "../config";
 
 export const PAYMENT_CHAIN = baseSepolia;
 export const PAYMENT_CHAIN_ID = baseSepolia.id;
 export const TRANSACTION_RECEIPT_TIMEOUT_MS = 90_000;
 
-const serverEnvSchema = z.object({
-  BASE_SEPOLIA_RPC_URL: z.string().url(),
-  EXECUTOR_PRIVATE_KEY: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
-});
-
 export class PaymentConfigError extends Error {
-  readonly code = "PAYMENT_CONFIG_FAILURE";
+  readonly code = "MISSING_CONFIG";
 
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -30,19 +26,19 @@ export class PaymentConfigError extends Error {
 export function getBaseSepoliaClients() {
   assertServerRuntime();
 
-  const parsed = serverEnvSchema.safeParse(process.env);
-  if (!parsed.success) {
-    throw new PaymentConfigError(
-      "BASE_SEPOLIA_RPC_URL or EXECUTOR_PRIVATE_KEY is missing or invalid",
-      { cause: parsed.error },
-    );
+  let config;
+  try {
+    config = getServerConfig();
+  } catch (cause) {
+    const message =
+      cause instanceof ConfigValidationError
+        ? "Payment executor configuration is unavailable"
+        : "Payment executor configuration could not be loaded";
+    throw new PaymentConfigError(message, { cause });
   }
 
-  const account = privateKeyToAccount(parsed.data.EXECUTOR_PRIVATE_KEY as Hex);
-  const transport = http(parsed.data.BASE_SEPOLIA_RPC_URL, {
-    retryCount: 2,
-    timeout: 20_000,
-  });
+  const account = privateKeyToAccount(config.executorPrivateKey);
+  const transport = http(config.baseSepoliaRpcUrl, { retryCount: 2, timeout: 20_000 });
 
   return {
     account,

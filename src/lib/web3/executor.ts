@@ -9,13 +9,16 @@ import {
 import {
   getBaseSepoliaClients,
   PAYMENT_CHAIN_ID,
+  PaymentConfigError,
   TRANSACTION_RECEIPT_TIMEOUT_MS,
 } from "./config";
 
 export type PaymentFailureReason =
-  | "tx_reverted"
-  | "network_failure"
-  | "insufficient_gas";
+  | "TX_REVERTED"
+  | "RPC_FAILURE"
+  | "INSUFFICIENT_GAS"
+  | "MISSING_CONFIG"
+  | "INVALID_INPUT";
 
 export class PaymentExecutionError extends Error {
   readonly code = "PAYMENT_EXECUTION_FAILURE";
@@ -36,10 +39,10 @@ export async function executePayment(
   amount: bigint,
 ): Promise<{ txHash: string }> {
   if (!isAddress(recipient)) {
-    throw new PaymentExecutionError("network_failure", "Recipient is not a valid EVM address");
+    throw new PaymentExecutionError("INVALID_INPUT", "Recipient is not a valid EVM address");
   }
   if (amount <= 0n) {
-    throw new PaymentExecutionError("network_failure", "Payment amount must be greater than zero");
+    throw new PaymentExecutionError("INVALID_INPUT", "Payment amount must be greater than zero");
   }
 
   const to = getAddress(recipient);
@@ -51,7 +54,7 @@ export async function executePayment(
     // Refuse to sign if the configured RPC is not actually Base Sepolia.
     if (connectedChainId !== PAYMENT_CHAIN_ID || chain.id !== PAYMENT_CHAIN_ID) {
       throw new PaymentExecutionError(
-        "network_failure",
+        "RPC_FAILURE",
         `Refusing payment on unexpected chain ${connectedChainId}`,
       );
     }
@@ -64,7 +67,7 @@ export async function executePayment(
 
     if (balance < amount + gas * gasPrice) {
       throw new PaymentExecutionError(
-        "insufficient_gas",
+        "INSUFFICIENT_GAS",
         "Executor wallet lacks enough ETH for the transfer and estimated gas",
       );
     }
@@ -83,21 +86,28 @@ export async function executePayment(
     });
 
     if (receipt.status !== "success") {
-      throw new PaymentExecutionError("tx_reverted", "Base Sepolia transaction reverted");
+      throw new PaymentExecutionError("TX_REVERTED", "Base Sepolia transaction reverted");
     }
 
     return { txHash };
   } catch (error) {
     if (error instanceof PaymentExecutionError) throw error;
+    if (error instanceof PaymentConfigError) {
+      throw new PaymentExecutionError(
+        "MISSING_CONFIG",
+        "Payment executor configuration is incomplete",
+        { cause: error },
+      );
+    }
     if (isInsufficientFunds(error)) {
       throw new PaymentExecutionError(
-        "insufficient_gas",
+        "INSUFFICIENT_GAS",
         "Executor wallet has insufficient funds for gas",
         { cause: error },
       );
     }
     throw new PaymentExecutionError(
-      "network_failure",
+      "RPC_FAILURE",
       "Base Sepolia transaction could not be confirmed",
       { cause: error },
     );

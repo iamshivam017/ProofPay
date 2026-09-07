@@ -59,7 +59,12 @@ export function ProofReceipt({ ticket, onBack }: ProofReceiptProps) {
 
         <div className="space-y-5">
           <Card className="rounded-xl p-6">
-            <p className="section-label">Settlement proof</p>
+            <div className="flex items-center justify-between gap-4">
+              <p className="section-label">Settlement proof</p>
+              <span className="font-mono text-[10px] uppercase tracking-[.14em] text-signal">
+                x402 settled · {ticket.x402.amountAtomic} atomic
+              </span>
+            </div>
             <HashProof
               label="x402 payment"
               hash={ticket.x402.transactionHash}
@@ -73,6 +78,15 @@ export function ProofReceipt({ ticket, onBack }: ProofReceiptProps) {
             {!baseTxHash && (
               <div className="mt-5 border-l-2 border-red-400/60 bg-red-400/[.05] px-4 py-3 font-mono text-xs text-red-300">
                 $0 moved — no downstream transaction was produced.
+              </div>
+            )}
+            {ticket.errors.length > 0 && (
+              <div className="mt-5 space-y-2 border-t border-line pt-5">
+                {ticket.errors.map((error) => (
+                  <p key={`${error.code}-${error.message}`} className="font-mono text-xs text-red-300">
+                    {error.code}: {error.message}
+                  </p>
+                ))}
               </div>
             )}
           </Card>

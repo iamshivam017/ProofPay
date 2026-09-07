@@ -65,7 +65,7 @@ export async function executeIfAllowedUsing(
     return result;
   } catch (error) {
     const reason =
-      error instanceof PaymentExecutionError ? error.reason : "network_failure";
+      error instanceof PaymentExecutionError ? error.reason : "RPC_FAILURE";
     const result = { status: "ERROR", reason } as const;
     console.error("proofpay.payment.failed", { ...audit, txHash: null, error: reason });
     return result;

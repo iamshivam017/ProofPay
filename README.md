@@ -1,38 +1,68 @@
 # ProofPay
 
-> No verified intelligence, no payment.
+> Verified intelligence before autonomous money moves.
 
-ProofPay is an authenticity-gated agentic payment gateway for the Telegraph
-Protocol Hackathon, Track 3. It sends evidence to a live Telegraph Miner through
-x402 and will eventually allow a Base Sepolia transfer only when a deterministic
-policy permits it.
+ProofPay is an authenticity-gated agentic payment gateway built for the
+**Telegraph Protocol Hackathon — Track 3**. It asks a live Telegraph Miner to
+assess submitted evidence through the x402 micropayment protocol, applies a
+deterministic policy, and executes a Base Sepolia payment only for an exact
+`ALLOW` verdict.
 
-## Current status: Slices 1–4
+**Status:** Hackathon-ready code complete — live testnet verification pending.
 
-Slice 1 provides the server-side Telegraph x402 client and a test API route. It:
+## Safety contract
 
-- sends evidence to the configured Telegraph endpoint;
-- handles the standard x402 v2 `402` challenge;
-- accepts only the `exact` scheme on Base Sepolia (`eip155:84532`);
-- verifies that the requested asset is the configured Base Sepolia USDC;
-- enforces a hard payment cap and checks the burner wallet's USDC balance;
-- signs the EIP-3009 authorization with a server-only viem account;
-- captures the real `PAYMENT-RESPONSE` settlement proof and transaction hash;
-- fails closed on malformed challenges, timeouts, insufficient funds, payment
-  failures, invalid JSON, or unavailable Miners.
+- Production paths use real Telegraph Miner responses. There are no mocked
+  Miner results, scores, x402 settlements, telemetry events, or transaction
+  hashes.
+- Only `ALLOW` reaches the payment executor. `REVIEW`, `BLOCK`, malformed input,
+  dependency failure, and runtime-unknown states move `$0`.
+- Both x402 settlement and downstream transfer are pinned to Base Sepolia.
+- Secrets remain server-side and must never use a `NEXT_PUBLIC_` prefix.
+- Uncertainty fails closed and is made visible in the Decision Ticket.
 
-No Miner output, confidence value, x402 proof, or transaction hash is mocked.
+## Core loop
 
-## Prerequisites
+1. A user submits an ETH amount, Base recipient, reason, and evidence text.
+2. The server validates the request and configuration.
+3. The x402 client calls the configured Telegraph endpoint, validates the paid
+   challenge, signs the EIP-3009 USDC authorization, and captures settlement.
+4. The Miner response is normalized without inventing absent fields.
+5. The pure policy engine returns exactly `ALLOW`, `REVIEW`, or `BLOCK`.
+6. The server calls the Base Sepolia executor only for `ALLOW` and waits for a
+   successful receipt.
+7. The UI renders the auditable Decision Ticket and real proof fields.
 
-- Node.js 20+
-- A full paid Telegraph Engine/Miner endpoint supplied by the organizers
-- A dedicated Base Sepolia burner wallet with enough Base Sepolia USDC
-- A Base Sepolia RPC endpoint
+The major modules are deliberately separated:
 
-Never use a personal or mainnet wallet.
+| Layer | Location | Responsibility |
+| --- | --- | --- |
+| x402 / Telegraph | `lib/telegraph/x402-client.ts` | Paid HTTP exchange and settlement validation |
+| Request/config | `src/lib/api`, `src/lib/config.ts` | Untrusted input and server environment validation |
+| Policy | `src/lib/policy` | Pure deterministic decision rules |
+| Payment | `src/lib/web3` | Base Sepolia-only gate and executor |
+| Orchestration | `src/app/api/verify/route.ts` | Live vertical slice and Decision Ticket |
+| UI | `src/app/page.tsx`, `src/components` | Request, chamber, decision, and receipt views |
 
-## Setup
+## Locked policy
+
+| Priority | Rule | Verdict |
+| --- | --- | --- |
+| 1 | Invalid evidence/input or any required risk `>= 0.85` | `BLOCK` |
+| 2 | Missing/failed required signal, missing confidence, or risk conflict `>= 0.30` | `REVIEW` |
+| 3 | Every required signal succeeds, risk `<= 0.35`, confidence `>= 0.80`, and conflict `< 0.30` | `ALLOW` |
+| 4 | Anything else | `REVIEW` |
+
+The engine contains one `ALLOW` return path. The payment gate independently
+checks `decision.verdict === "ALLOW"` before calling the executor.
+
+## Requirements and environment
+
+- Node.js 20 or newer (CI uses Node.js 22)
+- A complete paid Telegraph Engine/Miner POST endpoint supplied by Telegraph
+- A dedicated, low-balance Base Sepolia burner wallet
+- Base Sepolia ETH for downstream value and gas
+- Base Sepolia USDC for x402 inference charges
 
 ```bash
 npm install
@@ -40,118 +70,91 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Configure these server-only variables in `.env.local`:
+Set these server-only values in `.env.local`:
 
-| Variable | Purpose |
-| --- | --- |
-| `TELEGRAPH_ENGINE_URL` | Complete paid POST endpoint |
-| `EXECUTOR_PRIVATE_KEY` | Dedicated Base Sepolia burner-wallet private key |
-| `BASE_SEPOLIA_RPC_URL` | RPC used for the pre-signature USDC balance check |
-| `BASE_SEPOLIA_USDC_ADDRESS` | Trusted Base Sepolia USDC contract |
-| `X402_MAX_PAYMENT_ATOMIC` | Maximum permitted charge in 6-decimal USDC units |
-| `TELEGRAPH_REQUEST_TIMEOUT_MS` | Timeout for the complete x402 exchange |
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `TELEGRAPH_ENGINE_URL` | Yes | Complete live paid POST endpoint |
+| `EXECUTOR_PRIVATE_KEY` | Yes | Dedicated 32-byte burner key |
+| `BASE_SEPOLIA_RPC_URL` | Yes | Base Sepolia RPC URL |
+| `X402_MAX_PAYMENT_ATOMIC` | Yes | Maximum accepted x402 charge in 6-decimal USDC atoms |
+| `BASE_SEPOLIA_USDC_ADDRESS` | No | Trusted USDC contract; defaults to Coinbase Base Sepolia USDC |
+| `TELEGRAPH_REQUEST_TIMEOUT_MS` | No | Whole exchange timeout; defaults to 30 seconds |
 
-Do not prefix any secret with `NEXT_PUBLIC_` and never commit `.env.local`.
+Configuration validation reports only missing key names and safe warnings; it
+never returns secret values. Non-local HTTP endpoints, placeholder Telegraph
+hosts, malformed keys, and zero keys are rejected.
 
-## Exercise Slice 1
+## API contract
 
-```bash
-curl -X POST http://localhost:3000/api/verify \
-  -H "Content-Type: application/json" \
-  -d '{
-    "evidence": "Invoice INV-001 requests payment for completed delivery.",
-    "intent": "FRAUD_DETECTION"
-  }'
+`POST /api/verify` accepts:
+
+```json
+{
+  "amount": "0.0001",
+  "recipient": "0x1111111111111111111111111111111111111111",
+  "reason": "Pay verified delivery invoice",
+  "evidence": "Invoice INV-001 references completed delivery and signed receipt.",
+  "intent": "AUTHENTICITY_GATE"
+}
 ```
 
-A valid proof run must return:
+The public envelope caps a request at `0.001 ETH`; reason is capped at 280
+characters and evidence at 20,000. Other intents are explicitly unsupported.
+The response always has a request ID, timestamp, status, decision, reason,
+signals, Telegraph metadata, payment metadata, and errors. Failed dependencies
+return `payment.executed: false` and no hash.
 
-- real Telegraph Miner JSON under `data`;
-- the accepted payment requirement;
-- a successful settlement response;
-- a real Base Sepolia transaction hash under `payment.transactionHash`.
+Operational endpoints:
 
-Verify the transaction independently on BaseScan. The server log event is
-`proofpay.telegraph.completed`. Every error response includes `decision: BLOCK`.
+- `GET /api/health` — liveness, safe configuration boolean, network, timestamp.
+- `GET /api/status` — safe configuration metadata and honest process-local
+  counters. Counters reset on restart/cold start and are not durable analytics.
 
-## Quality gate
+## x402 behavior and resilience
+
+The client follows x402 v2 `PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE`, and
+`PAYMENT-RESPONSE`. It accepts only the `exact` scheme on `eip155:84532`, checks
+the configured USDC asset, validates recipient/amount, enforces the charge cap,
+checks balance, and requires successful settlement with a real transaction hash.
+
+The whole exchange has a bounded timeout. HTTP 429/500/502/503 and network
+failures map to Miner-unavailable states; timeout, malformed JSON, and x402
+failures remain distinct. ProofPay adds no application-level blind retry because
+the live endpoint has no confirmed idempotency contract; the x402 SDK may perform
+only its protocol-defined payment recovery. Silently risking a duplicate
+inference charge is less safe than holding the action.
+
+## Commands
 
 ```bash
+npm run dev
 npm run lint
 npm run typecheck
 npm test
 npm run build
+npm start
 ```
 
-GitHub Actions runs the same checks on pushes and pull requests.
+Unit tests use synthetic fixtures only for local decision, validation, error,
+and gate logic. They never represent those fixtures as live Miner or chain
+results. CI runs lint, typecheck, unit tests, and build without credentials;
+live integration is intentionally opt-in.
 
-## Protocol compatibility
+## Judge demo
 
-The implementation follows x402 v2's `PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE`,
-and `PAYMENT-RESPONSE` headers. It intentionally does not send a separate ERC-20
-transfer before retrying because the standard `exact` EVM scheme uses a signed
-authorization that the facilitator settles. Header names are centralized in
-`X402_HEADERS` so a confirmed Telegraph-specific transport can be adopted with a
-small, auditable change.
+The landing screen includes legitimate and suspicious evidence presets. They
+prefill only user inputs: both still call the live Miner, pay x402, run the real
+policy, and respect the production payment gate.
 
-## Scope boundaries
+1. Configure and fund a dedicated Base Sepolia burner.
+2. Open the app and confirm the testnet badge.
+3. Enter a recipient and choose a preset or provide evidence.
+4. Submit and narrate the real chamber status.
+5. For `ALLOW`, open the returned BaseScan link and confirm status `Success`.
+6. For `REVIEW` or `BLOCK`, show `$0 moved` and confirm no downstream hash.
 
-Not implemented through Slice 4:
-
-- authentication or database persistence.
-
-Those belong to subsequent vertical slices and must not be simulated.
-
-## Slice 2: deterministic policy engine
-
-The pure TypeScript policy engine consumes normalized Miner signals and returns
-exactly one `ALLOW`, `REVIEW`, or `BLOCK` verdict. It does not call an LLM or any
-external service.
-
-Policy defaults:
-
-| Rule | Threshold |
-| --- | --- |
-| BLOCK risk | `risk >= 0.85` |
-| ALLOW risk | every required risk `<= 0.35` |
-| ALLOW confidence | every required confidence `>= 0.80` |
-| Material conflict | risk range `>= 0.30` |
-
-Invalid evidence or malformed score input BLOCKS. Missing required signals,
-unavailable confidence, Miner/x402 availability failures, uncertain scores, and
-material conflicts REVIEW. ALLOW has a single return path and requires at least
-one explicitly required, successful signal.
-
-The existing paid `/api/verify` route sends only its real Telegraph response to
-the policy adapter and logs `proofpay.policy.evaluated`. If the response does not
-contain normalized signals, the adapter records a required `MISSING` signal and
-the engine returns REVIEW; it never invents a score.
-
-The repository intentionally does not persist raw Miner evidence or runtime
-logs. No real response artifact is currently checked in, so the integration is
-exercised through the live paid route. A submission proof run should retain the
-request ID, timestamp, Miner identity/intent, latency, raw response, risk and
-confidence values, and x402 settlement reference in an appropriately redacted
-demo log or Decision Ticket.
-
-## Slice 3: Base Sepolia payment executor
-
-The server-only payment gate maps `BLOCK` to `BLOCKED`, preserves `REVIEW`, and
-invokes the native ETH executor only for an exact `ALLOW` verdict. Unknown or
-runtime-invalid verdicts are blocked. The executor independently validates the
-recipient and positive amount, confirms RPC chain ID `84532`, checks balance
-against value plus estimated gas, broadcasts with `viem`, and waits for a
-successful receipt before reporting `EXECUTED`.
-
-Transaction failures are classified as `tx_reverted`, `network_failure`, or
-`insufficient_gas`. Every gate outcome logs its timestamp, decision, recipient,
-amount, transaction hash or error. No transaction hash is generated locally.
-
-### Real Slice 1 → 2 → 3 demo
-
-Start the application with a funded, dedicated Base Sepolia burner wallet in
-`.env.local`, then run the following in a second terminal with the same
-server-only environment:
+The CLI live check uses that same API route:
 
 ```bash
 npm run demo:payment -- \
@@ -159,26 +162,52 @@ npm run demo:payment -- \
   "Authentic evidence expected to pass the configured Miner policy"
 ```
 
-The script posts that evidence to the real `/api/verify` route. A `BLOCK` or
-`REVIEW` exits without broadcasting. A genuine `ALLOW` sends exactly `0.0001`
-Base Sepolia ETH, waits for confirmation, and prints the real transaction URL at
-`https://sepolia.basescan.org/tx/<hash>`.
+It requests exactly `0.0001 ETH`. It never fabricates an `ALLOW`; a real
+`REVIEW`, `BLOCK`, or integration failure exits without broadcasting.
 
-## Slice 4: verification chamber and Decision Ticket
+## Deployment
 
-The responsive App Router interface exposes exactly four focused views:
+Deploy as a Node.js Next.js application (for example, Vercel), add the variables
+from `.env.example` as encrypted runtime secrets, and do not expose them to
+preview logs or the client bundle. Use a dedicated funded burner with a strict
+operational balance. Run the quality gate before deployment and smoke-check
+`/api/health` afterward. The current process-local status counters are useful
+for a single demo instance, not horizontally scaled production telemetry.
 
-1. payment request and evidence entry;
-2. a truthful, terminal-style verification chamber;
-3. a high-contrast ALLOW, REVIEW, BLOCK, or held-error decision;
-4. a receipt containing only real Miner, x402, policy, and Base transaction data.
+## Troubleshooting
 
-The client never generates Miner names, scores, or hashes. Its API route runs
-the live x402 exchange, evaluates the deterministic policy, then calls the
-Slice 3 gate. A failed Miner or x402 exchange returns “Verification unavailable
-— action held for safety.” BLOCK, REVIEW, and errors visibly report `$0 moved`.
+| Symptom | Safe outcome / action |
+| --- | --- |
+| Configuration incomplete | `/api/health` reports `configured: false`; set missing runtime variables |
+| Miner unavailable or timed out | Action is held; verify the exact endpoint and upstream health |
+| x402 payment failed | Action is held; verify USDC balance, asset, cap, RPC, and organizer requirements |
+| Invalid Miner payload | Action is held; reconcile the real response adapter without inventing fields |
+| `INSUFFICIENT_GAS` | No success is reported; fund the burner with Base Sepolia ETH |
+| `RPC_FAILURE` / `TX_REVERTED` | No success is reported; inspect server logs and BaseScan |
+| Decision is `REVIEW` | Inspect missing confidence/signals or conflict; no payment is executed |
 
-Because this hackathon build intentionally has no authentication, the public
-request envelope is capped at `0.001 ETH` per call. The low-balance burner
-wallet remains the final operational exposure limit until rate limiting and
-idempotency controls are added during reliability hardening.
+## Security and compliance notes
+
+- Evidence is untrusted, length-limited text and is never allowed to alter the
+  deterministic policy. Image upload is intentionally not enabled.
+- Raw evidence and private keys are excluded from structured server logs.
+- `.env.local` and all `.env.*` files except `.env.example` are ignored by Git.
+- The executor validates chain ID 84532, recipient, amount, balance, gas, and
+  confirmed receipt. It never creates a local/fake transaction hash.
+- Base Sepolia is testnet-only and has no intended real economic value.
+- ProofPay provides a deterministic safety gate, not legal, compliance, fraud,
+  or financial advice. Production use would require durable idempotency, rate
+  limiting, access control, privacy retention policy, monitoring, and review of
+  jurisdiction-specific obligations.
+- The required Next.js 14 dependency line has current high-severity advisories.
+  `npm audit` offers only a breaking Next.js 16 upgrade. This app does not use
+  rewrites, middleware, remote image optimization, or Server Actions, but a
+  framework migration and renewed security review remain required before a
+  production launch.
+
+## Verification boundary
+
+Code, tests, and CI can prove the decision invariant and fail-closed behavior,
+but they cannot prove a live funded-wallet result without runtime secrets and
+funds. See `docs/LIVE_VERIFICATION.md` for the remaining operator checklist and
+`docs/TEST_MATRIX.md` for the audited coverage.

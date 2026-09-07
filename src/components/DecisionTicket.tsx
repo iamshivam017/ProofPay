@@ -6,6 +6,7 @@ export function DecisionTicket({ ticket }: { ticket: DecisionTicketData }) {
     <div className="border-y border-line">
       <TicketRow label="Request ID" value={ticket.requestId} />
       <TicketRow label="Timestamp" value={ticket.timestamp} />
+      <TicketRow label="Status" value={ticket.status} />
       <TicketRow
         label="Miner"
         value={ticket.verification.minerIdentity ?? "Unavailable in Miner response"}
@@ -16,6 +17,16 @@ export function DecisionTicket({ ticket }: { ticket: DecisionTicketData }) {
         <Badge className={verdictStyle[ticket.policy.verdict]}>{ticket.policy.verdict}</Badge>
       </div>
       <TicketRow label="Reason" value={ticket.policy.reason} mono={false} />
+      <TicketRow
+        label="Signal conflict"
+        value={
+          ticket.verification.conflict === null
+            ? "Not enough comparable signals"
+            : ticket.verification.conflict
+              ? "Material conflict detected"
+              : "No material conflict"
+        }
+      />
       <TicketRow label="Execution" value={ticket.execution.status} />
     </div>
   );

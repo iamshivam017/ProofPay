@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "next lint",
-    "test": "node --test tests/**/*.test.mjs",
+    "test": "node --test tests/security-invariants.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -25,13 +25,20 @@ export async function POST(request: Request) {
     const config = getServerConfig();
     const result = await postWithX402({
       targetUrl: config.telegraphEngineUrl,
+      // Telegraph's documented auto-routed Engine contract accepts a natural
+      // language `query` plus optional structured `context`. Evidence stays in
+      // context so it cannot replace the routing instruction itself.
       payload: {
-        evidence: input.evidence,
-        intent: input.intent,
-        paymentRequest: {
-          amountEth: input.amount,
-          recipient: input.recipient,
-          reason: input.reason,
+        query:
+          "Assess the supplied payment instruction evidence for text authenticity and fraud risk. Return explicit risk and confidence scores when the selected Miner supports them.",
+        context: {
+          requested_intent: input.intent,
+          evidence: input.evidence,
+          payment_request: {
+            amount_eth: input.amount,
+            recipient: input.recipient,
+            reason: input.reason,
+          },
         },
       },
       privateKey: config.executorPrivateKey,

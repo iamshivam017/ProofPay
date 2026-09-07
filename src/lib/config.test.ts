@@ -45,3 +45,14 @@ test("invalid and unsafe configuration are distinguished", () => {
     (error) => error instanceof ConfigValidationError && error.code === "UNSAFE_CONFIG",
   );
 });
+
+test("obvious Telegraph placeholder URLs are rejected as unsafe", () => {
+  assert.throws(
+    () => getServerConfig({
+      ...validEnv,
+      TELEGRAPH_ENGINE_URL: "https://your-actual-miner-or-engine-url-here/v1/verify",
+    }),
+    (error: unknown) =>
+      error instanceof ConfigValidationError && error.code === "UNSAFE_CONFIG",
+  );
+});

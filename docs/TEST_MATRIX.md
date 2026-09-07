@@ -6,7 +6,7 @@ Telegraph and Base Sepolia dependencies and are never simulated in CI.
 | Area | Test | Expected | Automated |
 | --- | --- | --- | --- |
 | Invalid input | POST-equivalent schema parse with malformed body | Reject before external call; `BLOCK` envelope | Yes |
-| Unsupported intent | Non-`AUTHENTICITY_GATE` input | Explicit rejection; never `ALLOW` | Yes |
+| Unsupported intent | Non-`TEXT_AUTHENTICITY_CHECK` input | Explicit rejection; never `ALLOW` | Yes |
 | Missing required signal | Required Miner signal is missing | `REVIEW` | Yes |
 | Miner timeout/failure | Required signal timeout, unreachable, or x402 failure | `REVIEW` | Yes |
 | Missing confidence | Required confidence is absent | `REVIEW` | Yes |

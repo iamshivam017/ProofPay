@@ -53,7 +53,7 @@ export default function HomePage() {
       const response = await fetch("/api/verify", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...values, intent: "AUTHENTICITY_GATE" }),
+        body: JSON.stringify({ ...values, intent: "TEXT_AUTHENTICITY_CHECK" }),
       });
       const body: unknown = await response.json();
 
@@ -94,7 +94,7 @@ export default function HomePage() {
           <VerificationChamber
             amount={pending.amount}
             recipient={pending.recipient}
-            intent="AUTHENTICITY_GATE"
+            intent="TEXT_AUTHENTICITY_CHECK"
           />
         )}
         {phase === "decision" && (
@@ -319,7 +319,7 @@ function unavailableFailure(message: string): VerifyFailureResponse {
     decision: "REVIEW",
     reason: message,
     signals: [],
-    telegraph: { miner: null, intent: "AUTHENTICITY_GATE", latencyMs: 0, x402: null },
+    telegraph: { miner: null, intent: "TEXT_AUTHENTICITY_CHECK", latencyMs: 0, x402: null },
     payment: { executed: false, txHash: null, explorerUrl: null },
     errors: [{ code: "VERIFICATION_UNAVAILABLE", message }],
     error: { code: "VERIFICATION_UNAVAILABLE", message },

@@ -8,7 +8,7 @@ const validRequest = {
   recipient: "0x0000000000000000000000000000000000000001",
   reason: "Confirmed invoice",
   evidence: "The delivery was received and confirmed.",
-  intent: "AUTHENTICITY_GATE",
+  intent: "TEXT_AUTHENTICITY_CHECK",
 };
 
 test("valid request input is accepted", () => {

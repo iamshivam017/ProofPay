@@ -123,7 +123,10 @@ function unsafeWarnings(data: z.infer<typeof configSchema>): string[] {
   if (telegraph.protocol !== "https:" && !isLocalhost(telegraph.hostname)) {
     warnings.push("Telegraph endpoint must use HTTPS outside localhost.");
   }
-  if (telegraph.hostname.endsWith(".example")) {
+  if (
+    telegraph.hostname.endsWith(".example") ||
+    /(?:placeholder|your-actual|replace-with)/i.test(telegraph.href)
+  ) {
     warnings.push("Telegraph endpoint is still a placeholder.");
   }
   if (/^0x0{64}$/i.test(data.EXECUTOR_PRIVATE_KEY)) {

@@ -16,6 +16,26 @@ test("a complete real-shaped signal envelope is preserved", () => {
   assert.deepEqual(normalizeRealMinerSignals({ signals: [signal] }), { signals: [signal] });
 });
 
+test("documented Engine result envelopes preserve normalized Miner signals", () => {
+  const signal = {
+    id: "authenticity",
+    minerId: "32",
+    kind: "text-authenticity-risk",
+    required: true,
+    status: "OK",
+    risk: 0.12,
+    confidence: 0.91,
+  } as const;
+
+  const normalized = normalizeRealMinerSignals({
+    miner_id: "32",
+    miner_name: "example-miner",
+    result: { signals: [signal] },
+  });
+
+  assert.deepEqual(normalized, { signals: [signal] });
+});
+
 test("missing or malformed Miner signals map to INVALID_MINER_RESPONSE", () => {
   for (const payload of [{}, { signals: [] }, { signals: [{ status: "UNKNOWN" }] }]) {
     const result = normalizeRealMinerSignals(payload);

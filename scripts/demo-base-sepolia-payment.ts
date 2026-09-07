@@ -17,7 +17,7 @@ const response = await fetch(verifyUrl, {
     recipient,
     reason: "ProofPay live Slice 1–4 integration check",
     evidence,
-    intent: "AUTHENTICITY_GATE",
+    intent: "TEXT_AUTHENTICITY_CHECK",
   }),
 });
 

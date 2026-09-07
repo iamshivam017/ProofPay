@@ -16,10 +16,18 @@ export interface MinerNormalizationResult {
 
 /** Normalizes only the documented signal envelope; absent fields are never inferred. */
 export function normalizeRealMinerSignals(data: unknown): MinerNormalizationResult {
+  const engineResult =
+    data && typeof data === "object" &&
+    (data as Record<string, unknown>).result &&
+    typeof (data as Record<string, unknown>).result === "object"
+      ? (data as Record<string, unknown>).result as Record<string, unknown>
+      : null;
   const candidateSignals = Array.isArray(data)
     ? data
     : data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).signals)
       ? (data as Record<string, unknown>).signals as unknown[]
+      : engineResult && Array.isArray(engineResult.signals)
+        ? engineResult.signals as unknown[]
       : null;
 
   if (

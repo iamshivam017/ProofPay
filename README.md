@@ -78,7 +78,7 @@ Set these server-only values in `.env.local`:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `TELEGRAPH_ENGINE_URL` | Yes | Complete live paid POST endpoint |
+| `TELEGRAPH_ENGINE_URL` | Yes | Live paid Engine endpoint; testnet default is `https://devnode.telegraphprotocol.com/engine/v1/ask` |
 | `EXECUTOR_PRIVATE_KEY` | Yes | Dedicated 32-byte burner key |
 | `BASE_SEPOLIA_RPC_URL` | Yes | Base Sepolia RPC URL |
 | `X402_MAX_PAYMENT_ATOMIC` | Yes | Maximum accepted x402 charge in 6-decimal USDC atoms |
@@ -99,7 +99,7 @@ hosts, malformed keys, and zero keys are rejected.
   "recipient": "0x1111111111111111111111111111111111111111",
   "reason": "Pay verified delivery invoice",
   "evidence": "Invoice INV-001 references completed delivery and signed receipt.",
-  "intent": "AUTHENTICITY_GATE"
+  "intent": "TEXT_AUTHENTICITY_CHECK"
 }
 ```
 

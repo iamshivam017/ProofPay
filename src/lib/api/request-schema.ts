@@ -2,7 +2,7 @@ import { parseEther } from "viem";
 import { z } from "zod";
 
 export const MAX_REQUEST_AMOUNT_WEI = parseEther("0.001");
-export const SUPPORTED_INTENT = "AUTHENTICITY_GATE" as const;
+export const SUPPORTED_INTENT = "TEXT_AUTHENTICITY_CHECK" as const;
 
 const amountSchema = z.string().trim().refine((value) => {
   try {

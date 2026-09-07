@@ -8,6 +8,8 @@ import {
   TelegraphRequestFailure,
   X402PaymentFailure,
 } from "@/lib/telegraph/x402-client";
+import { evaluatePolicy } from "@/src/lib/policy/engine";
+import type { MinerSignal, MinerSignalStatus } from "@/src/lib/policy/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,6 +53,18 @@ export async function POST(request: Request) {
       requestHeaders: { "x-proofpay-request-id": requestId },
     });
 
+    // This is the Slice 2 integration check: only the real response returned by
+    // the paid Slice 1 call reaches the deterministic engine. No fixture or
+    // fallback score is used. Unrecognized data becomes a required MISSING
+    // signal and therefore REVIEWs.
+    const policyDecision = evaluatePolicy(normalizeRealMinerSignals(result.data));
+
+    console.info("proofpay.policy.evaluated", {
+      requestId,
+      timestamp: new Date().toISOString(),
+      policyDecision,
+    });
+
     console.info("proofpay.telegraph.completed", {
       requestId,
       timestamp: new Date().toISOString(),
@@ -66,6 +80,7 @@ export async function POST(request: Request) {
       requestId,
       timestamp: new Date().toISOString(),
       latencyMs: Date.now() - startedAt,
+      policyDecision,
       ...result,
     });
   } catch (error) {
@@ -90,6 +105,34 @@ export async function POST(request: Request) {
       { status: failure.httpStatus },
     );
   }
+}
+
+function normalizeRealMinerSignals(data: unknown): MinerSignal[] {
+  const candidateSignals = Array.isArray(data)
+    ? data
+    : data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).signals)
+      ? (data as Record<string, unknown>).signals as unknown[]
+      : null;
+
+  if (!candidateSignals) {
+    return [missingRealSignal(data)];
+  }
+
+  // Preserve the real values verbatim. evaluatePolicy performs runtime shape
+  // and range validation; this adapter never supplies default scores.
+  return candidateSignals.map((value) => value as MinerSignal);
+}
+
+function missingRealSignal(data: unknown): MinerSignal {
+  return {
+    id: "telegraph-primary-signal",
+    minerId: extractMinerIdentity(data) ?? "telegraph-miner-unidentified",
+    kind: "normalized-authenticity-risk",
+    required: true,
+    status: "MISSING" satisfies MinerSignalStatus,
+    risk: null,
+    confidence: null,
+  };
 }
 
 function extractMinerIdentity(data: unknown): string | null {

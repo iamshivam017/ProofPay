@@ -7,7 +7,7 @@ Protocol Hackathon, Track 3. It sends evidence to a live Telegraph Miner through
 x402 and will eventually allow a Base Sepolia transfer only when a deterministic
 policy permits it.
 
-## Current status: Slice 1
+## Current status: Slices 1–2
 
 Slice 1 provides the server-side Telegraph x402 client and a test API route. It:
 
@@ -96,11 +96,42 @@ small, auditable change.
 
 ## Scope boundaries
 
-Not implemented in Slice 1:
+Not implemented through Slice 2:
 
-- deterministic ALLOW/REVIEW/BLOCK policy evaluation;
 - downstream Base Sepolia ProofPay transfer;
 - evidence-upload UI and Decision Ticket;
 - authentication or database persistence.
 
 Those belong to subsequent vertical slices and must not be simulated.
+
+## Slice 2: deterministic policy engine
+
+The pure TypeScript policy engine consumes normalized Miner signals and returns
+exactly one `ALLOW`, `REVIEW`, or `BLOCK` verdict. It does not call an LLM or any
+external service.
+
+Policy defaults:
+
+| Rule | Threshold |
+| --- | --- |
+| BLOCK risk | `risk >= 0.85` |
+| ALLOW risk | every required risk `<= 0.35` |
+| ALLOW confidence | every required confidence `>= 0.80` |
+| Material conflict | risk range `>= 0.30` |
+
+Invalid evidence or malformed score input BLOCKS. Missing required signals,
+unavailable confidence, Miner/x402 availability failures, uncertain scores, and
+material conflicts REVIEW. ALLOW has a single return path and requires at least
+one explicitly required, successful signal.
+
+The existing paid `/api/verify` route sends only its real Telegraph response to
+the policy adapter and logs `proofpay.policy.evaluated`. If the response does not
+contain normalized signals, the adapter records a required `MISSING` signal and
+the engine returns REVIEW; it never invents a score.
+
+The repository intentionally does not persist raw Miner evidence or runtime
+logs. No real response artifact is currently checked in, so the integration is
+exercised through the live paid route. A submission proof run should retain the
+request ID, timestamp, Miner identity/intent, latency, raw response, risk and
+confidence values, and x402 settlement reference in an appropriately redacted
+demo log or Decision Ticket.

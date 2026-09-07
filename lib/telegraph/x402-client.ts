@@ -263,7 +263,10 @@ export async function postWithX402<T = unknown>(
 
   // Observe and validate the challenge before the official wrapper signs it.
   const guardedFetch: typeof fetch = async (input, init) => {
-    const outgoingHeaders = new Headers(init?.headers);
+    // @x402/fetch retries with a Request instance, so inspect both supported
+    // fetch call shapes. Looking only at init.headers creates a false negative.
+    const outgoingHeaders =
+      input instanceof Request ? input.headers : new Headers(init?.headers);
     if (outgoingHeaders.has(X402_HEADERS.paymentSignature)) {
       sawPaymentSignature = true;
     }
@@ -328,8 +331,19 @@ export async function postWithX402<T = unknown>(
       signal: controller.signal,
     });
 
-    if (response.status === 402 || (selectedRequirement && !sawPaymentSignature)) {
-      throw new X402PaymentFailure("x402 challenge was not successfully paid");
+    if (response.status === 402) {
+      const responseBody = await response.clone().text().catch(() => "");
+      throw new X402PaymentFailure("x402 payment was rejected by the resource server", {
+        details: {
+          status: response.status,
+          responseBody: responseBody.slice(0, 2_000),
+          paymentResponsePresent: response.headers.has(X402_HEADERS.paymentResponse),
+          paymentSignatureSent: sawPaymentSignature,
+        },
+      });
+    }
+    if (selectedRequirement && !sawPaymentSignature) {
+      throw new X402PaymentFailure("x402 SDK did not attach PAYMENT-SIGNATURE");
     }
     if (!response.ok) {
       const unavailable = [429, 500, 502, 503].includes(response.status);

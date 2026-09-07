@@ -7,7 +7,7 @@ Protocol Hackathon, Track 3. It sends evidence to a live Telegraph Miner through
 x402 and will eventually allow a Base Sepolia transfer only when a deterministic
 policy permits it.
 
-## Current status: Slices 1–2
+## Current status: Slices 1–3
 
 Slice 1 provides the server-side Telegraph x402 client and a test API route. It:
 
@@ -96,9 +96,8 @@ small, auditable change.
 
 ## Scope boundaries
 
-Not implemented through Slice 2:
+Not implemented through Slice 3:
 
-- downstream Base Sepolia ProofPay transfer;
 - evidence-upload UI and Decision Ticket;
 - authentication or database persistence.
 
@@ -135,3 +134,33 @@ exercised through the live paid route. A submission proof run should retain the
 request ID, timestamp, Miner identity/intent, latency, raw response, risk and
 confidence values, and x402 settlement reference in an appropriately redacted
 demo log or Decision Ticket.
+
+## Slice 3: Base Sepolia payment executor
+
+The server-only payment gate maps `BLOCK` to `BLOCKED`, preserves `REVIEW`, and
+invokes the native ETH executor only for an exact `ALLOW` verdict. Unknown or
+runtime-invalid verdicts are blocked. The executor independently validates the
+recipient and positive amount, confirms RPC chain ID `84532`, checks balance
+against value plus estimated gas, broadcasts with `viem`, and waits for a
+successful receipt before reporting `EXECUTED`.
+
+Transaction failures are classified as `tx_reverted`, `network_failure`, or
+`insufficient_gas`. Every gate outcome logs its timestamp, decision, recipient,
+amount, transaction hash or error. No transaction hash is generated locally.
+
+### Real Slice 1 → 2 → 3 demo
+
+Start the application with a funded, dedicated Base Sepolia burner wallet in
+`.env.local`, then run the following in a second terminal with the same
+server-only environment:
+
+```bash
+npm run demo:payment -- \
+  0xYourBaseSepoliaRecipient \
+  "Authentic evidence expected to pass the configured Miner policy"
+```
+
+The script posts that evidence to the real `/api/verify` route. A `BLOCK` or
+`REVIEW` exits without broadcasting. A genuine `ALLOW` sends exactly `0.0001`
+Base Sepolia ETH, waits for confirmation, and prints the real transaction URL at
+`https://sepolia.basescan.org/tx/<hash>`.

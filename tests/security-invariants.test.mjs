@@ -4,6 +4,8 @@ import test from "node:test";
 
 const clientPath = new URL("../lib/telegraph/x402-client.ts", import.meta.url);
 const routePath = new URL("../app/api/verify/route.ts", import.meta.url);
+const paymentConfigPath = new URL("../src/lib/web3/config.ts", import.meta.url);
+const paymentExecutorPath = new URL("../src/lib/web3/executor.ts", import.meta.url);
 const gitignorePath = new URL("../.gitignore", import.meta.url);
 
 test("x402 wire headers use the v2 standard names", async () => {
@@ -14,13 +16,26 @@ test("x402 wire headers use the v2 standard names", async () => {
 });
 
 test("payment credentials remain server-only", async () => {
-  const [client, route] = await Promise.all([
+  const [client, route, paymentConfig, paymentExecutor] = await Promise.all([
     readFile(clientPath, "utf8"),
     readFile(routePath, "utf8"),
+    readFile(paymentConfigPath, "utf8"),
+    readFile(paymentExecutorPath, "utf8"),
   ]);
   assert.match(client, /import "server-only"/);
-  assert.doesNotMatch(client + route, /NEXT_PUBLIC_.*PRIVATE_KEY/);
+  assert.match(paymentConfig, /import "server-only"/);
+  assert.doesNotMatch(client + route + paymentConfig + paymentExecutor, /NEXT_PUBLIC_.*PRIVATE_KEY/);
   assert.match(route, /export const runtime = "nodejs"/);
+});
+
+test("downstream payments are pinned to Base Sepolia", async () => {
+  const [paymentConfig, paymentExecutor] = await Promise.all([
+    readFile(paymentConfigPath, "utf8"),
+    readFile(paymentExecutorPath, "utf8"),
+  ]);
+  assert.match(paymentConfig, /PAYMENT_CHAIN = baseSepolia/);
+  assert.match(paymentExecutor, /connectedChainId !== PAYMENT_CHAIN_ID/);
+  assert.doesNotMatch(paymentConfig + paymentExecutor, /mainnet/);
 });
 
 test("payment and dependency failures fail closed", async () => {

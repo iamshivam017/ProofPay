@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { parseEther, type Address, type Hex } from "viem";
 import { z } from "zod";
-import type { Address, Hex } from "viem";
 
 import {
   DEFAULT_BASE_SEPOLIA_USDC,
@@ -10,16 +10,29 @@ import {
 } from "@/lib/telegraph/x402-client";
 import { evaluatePolicy } from "@/src/lib/policy/engine";
 import type { MinerSignal, MinerSignalStatus } from "@/src/lib/policy/types";
+import type { DecisionTicket } from "@/src/lib/ticket/types";
+import { executeIfAllowed } from "@/src/lib/web3/gate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const MAX_REQUEST_AMOUNT_WEI = parseEther("0.001");
+
+const amountSchema = z.string().trim().refine((value) => {
+  try {
+    const amount = parseEther(value);
+    return amount > 0n && amount <= MAX_REQUEST_AMOUNT_WEI;
+  } catch {
+    return false;
+  }
+}, "Amount must be greater than 0 and no more than 0.001 ETH");
+
 const requestSchema = z.object({
-  evidence: z.union([
-    z.string().trim().min(1).max(20_000),
-    z.record(z.unknown()),
-  ]),
-  intent: z.string().trim().min(1).max(100).optional(),
+  amount: amountSchema,
+  recipient: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "Invalid recipient wallet"),
+  reason: z.string().trim().min(3).max(280),
+  evidence: z.string().trim().min(3).max(20_000),
+  intent: z.string().trim().min(1).max(100).default("AUTHENTICITY_GATE"),
 });
 
 const envSchema = z.object({
@@ -36,6 +49,7 @@ const envSchema = z.object({
 
 export async function POST(request: Request) {
   const requestId = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
   const startedAt = Date.now();
 
   try {
@@ -44,7 +58,15 @@ export async function POST(request: Request) {
 
     const result = await postWithX402({
       targetUrl: env.TELEGRAPH_ENGINE_URL,
-      payload: input,
+      payload: {
+        evidence: input.evidence,
+        intent: input.intent,
+        paymentRequest: {
+          amountEth: input.amount,
+          recipient: input.recipient,
+          reason: input.reason,
+        },
+      },
       privateKey: env.EXECUTOR_PRIVATE_KEY as Hex,
       rpcUrl: env.BASE_SEPOLIA_RPC_URL,
       expectedUsdcAddress: env.BASE_SEPOLIA_USDC_ADDRESS as Address,
@@ -53,42 +75,47 @@ export async function POST(request: Request) {
       requestHeaders: { "x-proofpay-request-id": requestId },
     });
 
-    // This is the Slice 2 integration check: only the real response returned by
-    // the paid Slice 1 call reaches the deterministic engine. No fixture or
-    // fallback score is used. Unrecognized data becomes a required MISSING
-    // signal and therefore REVIEWs.
-    const policyDecision = evaluatePolicy(normalizeRealMinerSignals(result.data));
+    const policy = evaluatePolicy(normalizeRealMinerSignals(result.data));
+    const execution = await executeIfAllowed(
+      policy,
+      input.recipient,
+      parseEther(input.amount),
+    );
+    const latencyMs = Date.now() - startedAt;
 
-    console.info("proofpay.policy.evaluated", {
+    const ticket: DecisionTicket = {
       requestId,
-      timestamp: new Date().toISOString(),
-      policyDecision,
-    });
+      timestamp,
+      request: {
+        recipient: input.recipient,
+        amountEth: input.amount,
+        reason: input.reason,
+        evidenceSummary: summarizeEvidence(input.evidence),
+      },
+      verification: {
+        minerIdentity: extractMinerIdentity(result.data),
+        intent: input.intent,
+        latencyMs,
+        signals: policy.signals,
+      },
+      policy,
+      x402: {
+        network: result.payment.requirement.network,
+        asset: result.payment.requirement.asset,
+        amountAtomic: result.payment.requirement.amount,
+        transactionHash: result.payment.transactionHash,
+      },
+      execution,
+    };
 
-    console.info("proofpay.telegraph.completed", {
-      requestId,
-      timestamp: new Date().toISOString(),
-      latencyMs: Date.now() - startedAt,
-      intent: input.intent ?? null,
-      miner: extractMinerIdentity(result.data),
-      status: "SUCCESS",
-      x402TransactionHash: result.payment.transactionHash,
-      rawResponse: result.data,
-    });
-
-    return NextResponse.json({
-      requestId,
-      timestamp: new Date().toISOString(),
-      latencyMs: Date.now() - startedAt,
-      policyDecision,
-      ...result,
-    });
+    console.info("proofpay.decision-ticket.created", ticket);
+    return NextResponse.json(ticket);
   } catch (error) {
     const failure = normalizeError(error);
 
-    console.error("proofpay.telegraph.failed", {
+    console.error("proofpay.verification.failed", {
       requestId,
-      timestamp: new Date().toISOString(),
+      timestamp,
       latencyMs: Date.now() - startedAt,
       code: failure.code,
       status: "FAIL_CLOSED",
@@ -96,12 +123,7 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json(
-      {
-        requestId,
-        timestamp: new Date().toISOString(),
-        decision: "BLOCK",
-        error: failure,
-      },
+      { requestId, timestamp, error: { code: failure.code, message: failure.message } },
       { status: failure.httpStatus },
     );
   }
@@ -111,22 +133,21 @@ function normalizeRealMinerSignals(data: unknown): MinerSignal[] {
   const candidateSignals = Array.isArray(data)
     ? data
     : data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).signals)
-      ? (data as Record<string, unknown>).signals as unknown[]
+      ? ((data as Record<string, unknown>).signals as unknown[])
       : null;
 
-  if (!candidateSignals) {
+  if (!candidateSignals || candidateSignals.length === 0) {
     return [missingRealSignal(data)];
   }
 
-  // Preserve the real values verbatim. evaluatePolicy performs runtime shape
-  // and range validation; this adapter never supplies default scores.
+  // Values remain verbatim; the policy engine owns runtime validation.
   return candidateSignals.map((value) => value as MinerSignal);
 }
 
 function missingRealSignal(data: unknown): MinerSignal {
   return {
     id: "telegraph-primary-signal",
-    minerId: extractMinerIdentity(data) ?? "telegraph-miner-unidentified",
+    minerId: extractMinerIdentity(data) ?? "unavailable",
     kind: "normalized-authenticity-risk",
     required: true,
     status: "MISSING" satisfies MinerSignalStatus,
@@ -146,27 +167,39 @@ function extractMinerIdentity(data: unknown): string | null {
   return null;
 }
 
+function summarizeEvidence(evidence: string): string {
+  return evidence.length > 240 ? `${evidence.slice(0, 237)}…` : evidence;
+}
+
 function normalizeError(error: unknown): {
   code: string;
   message: string;
   httpStatus: number;
 } {
   if (error instanceof X402PaymentFailure) {
-    return { code: error.code, message: error.message, httpStatus: 502 };
+    return {
+      code: error.code,
+      message: "Verification unavailable — action held for safety.",
+      httpStatus: 502,
+    };
   }
   if (error instanceof TelegraphRequestFailure) {
-    return { code: error.code, message: error.message, httpStatus: 502 };
+    return {
+      code: error.code,
+      message: "Verification unavailable — action held for safety.",
+      httpStatus: 502,
+    };
   }
   if (error instanceof z.ZodError) {
     return {
       code: "INVALID_INPUT_OR_CONFIG",
-      message: "Request input or server configuration is invalid",
+      message: "Payment request or server configuration is invalid.",
       httpStatus: 400,
     };
   }
   return {
     code: "MINER_UNREACHABLE",
-    message: "Miner unreachable - action halted",
+    message: "Verification unavailable — action held for safety.",
     httpStatus: 502,
   };
 }

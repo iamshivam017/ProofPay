@@ -7,7 +7,7 @@ Protocol Hackathon, Track 3. It sends evidence to a live Telegraph Miner through
 x402 and will eventually allow a Base Sepolia transfer only when a deterministic
 policy permits it.
 
-## Current status: Slices 1–3
+## Current status: Slices 1–4
 
 Slice 1 provides the server-side Telegraph x402 client and a test API route. It:
 
@@ -96,9 +96,8 @@ small, auditable change.
 
 ## Scope boundaries
 
-Not implemented through Slice 3:
+Not implemented through Slice 4:
 
-- evidence-upload UI and Decision Ticket;
 - authentication or database persistence.
 
 Those belong to subsequent vertical slices and must not be simulated.
@@ -164,3 +163,22 @@ The script posts that evidence to the real `/api/verify` route. A `BLOCK` or
 `REVIEW` exits without broadcasting. A genuine `ALLOW` sends exactly `0.0001`
 Base Sepolia ETH, waits for confirmation, and prints the real transaction URL at
 `https://sepolia.basescan.org/tx/<hash>`.
+
+## Slice 4: verification chamber and Decision Ticket
+
+The responsive App Router interface exposes exactly four focused views:
+
+1. payment request and evidence entry;
+2. a truthful, terminal-style verification chamber;
+3. a high-contrast ALLOW, REVIEW, BLOCK, or held-error decision;
+4. a receipt containing only real Miner, x402, policy, and Base transaction data.
+
+The client never generates Miner names, scores, or hashes. Its API route runs
+the live x402 exchange, evaluates the deterministic policy, then calls the
+Slice 3 gate. A failed Miner or x402 exchange returns “Verification unavailable
+— action held for safety.” BLOCK, REVIEW, and errors visibly report `$0 moved`.
+
+Because this hackathon build intentionally has no authentication, the public
+request envelope is capped at `0.001 ETH` per call. The low-balance burner
+wallet remains the final operational exposure limit until rate limiting and
+idempotency controls are added during reliability hardening.

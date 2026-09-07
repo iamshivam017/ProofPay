@@ -10,6 +10,7 @@
     "test": "node --conditions=react-server --import tsx --test lib/telegraph/x402-client.test.ts src/lib/config.test.ts src/lib/api/request-schema.test.ts src/lib/policy/engine.test.ts src/lib/telegraph/normalize.test.ts src/lib/web3/gate.test.ts tests/security-invariants.test.mjs tests/ui-invariants.test.mjs tests/api-contract-invariants.test.mjs",
     "demo:payment": "node --import tsx scripts/demo-base-sepolia-payment.ts",
     "diagnose:x402": "node --conditions=react-server --import tsx scripts/diagnose-x402.ts",
+    "diagnose:x402:pay": "node --conditions=react-server --import tsx scripts/diagnose-x402-payment.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

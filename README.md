@@ -44,6 +44,10 @@ The major modules are deliberately separated:
 | Orchestration | `src/app/api/verify/route.ts` | Live vertical slice and Decision Ticket |
 | UI | `src/app/page.tsx`, `src/components` | Request, chamber, decision, and receipt views |
 
+See the [architecture diagram](docs/ARCHITECTURE.md) and the
+[final verification checklist](docs/FINAL_VERIFICATION_CHECKLIST.md) for the
+evidence-backed submission audit.
+
 ## Locked policy
 
 | Priority | Rule | Verdict |
